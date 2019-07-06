@@ -5,7 +5,9 @@ import Appointment from '../models/Appointment';
 import User from '../models/User';
 import File from '../models/File';
 import Notifications from '../schemas/Notification';
-import Mail from '../../lib/Mail';
+
+import CancellationMail from '../jobs/CancellationMail';
+import Queue from '../../lib/Queue';
 
 class AppointmentController {
   async index(req, res) {
@@ -13,7 +15,7 @@ class AppointmentController {
     const appointments = await Appointment.findAll({
       where: { user_id: req.userId, canceled_at: null },
       order: ['date'],
-      attributes: ['id', 'date'],
+      attributes: ['id', 'date', 'past', 'cancelable'],
       limit: 20,
       offset: (page - 1) * 20,
       include: [
@@ -121,6 +123,11 @@ class AppointmentController {
           as: 'provider',
           attributes: ['name', 'email'],
         },
+        {
+          model: User,
+          as: 'user',
+          attributes: ['name'],
+        },
       ],
     });
     if (appointment.user_id !== req.userId) {
@@ -129,7 +136,7 @@ class AppointmentController {
       });
     }
     // diminiur 2 horas para check de cancelamento
-    const dateWithSub = subHours(appointment.date, 2);
+    const dateWithSub = subHours(parseISO(appointment.date), 2);
 
     if (isBefore(dateWithSub, new Date())) {
       return res.status(401).json({
@@ -139,13 +146,9 @@ class AppointmentController {
 
     appointment.canceled_at = new Date();
 
-    await Mail.sendMail({
-      to: `${appointment.provider.name}<${appointment.provider.email}>`,
-      subject: 'Agendamneto Cancelado',
-      text: 'Voce tem um novo cancelamento',
-    });
-
     await appointment.save();
+
+    await Queue.add(CancellationMail.key, { appointment });
 
     return res.json(appointment);
   }
